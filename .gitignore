@@ -1,3 +1,5 @@
 .venv
 
 words/
+
+node_modules/
