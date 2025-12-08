@@ -2,7 +2,7 @@ import axios from "axios"
 
 // 创建axios实例
 const api = axios.create({
-  baseURL: '/api',
+  baseURL: 'http://localhost:5000',
   timeout: 10000,
   headers: {
     'Content-Type': 'application/json'
@@ -38,6 +38,11 @@ export const chatApi = {
 }
 
 // 知识图谱接口
+export const knowledgeTestApi = {
+  testConnection() {
+    return api.get('/knowledge_graph/test_connection')
+  }
+}
 export const knowledgeApi = {
   getKnowledgeGraph() {
     return api.get('/knowledge_graph/get_kg')

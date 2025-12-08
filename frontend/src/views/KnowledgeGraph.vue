@@ -128,7 +128,7 @@
 
 <script>
 import { ref, onMounted, nextTick, computed, watch } from 'vue'
-import { knowledgeApi } from '../utils/api'
+import { knowledgeApi,knowledgeTestApi } from '../utils/api'
 import { ElMessage } from 'element-plus'
 import * as d3 from 'd3'
 
@@ -188,7 +188,7 @@ export default {
     // 检查数据库状态
     const checkDatabaseStatus = async () => {
       try {
-        const healthResponse = await fetch('http://localhost:5000/knowledge_graph/test_connection')
+        const healthResponse = await knowledgeTestApi.testConnection()
         const healthData = await healthResponse.json()
         if (healthData.database && healthData.message.includes('正常')) {
           databaseStatus.value = 'Neo4j数据库状态正常'

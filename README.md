@@ -30,6 +30,8 @@ cd /root/MedicalSystem
 git clone 仓库地址
 # 假设项目名为 Medical-QandA-System
 cd Medical-QandA-System
+拉取更新
+git pull
 4. 后端部署
 # 创建虚拟环境
 cd backend
@@ -37,13 +39,15 @@ python3 -m venv venv
 source venv/bin/activate
 # 安装依赖
 pip install -r requirements.txt
-# 使用 Gunicorn 启动
-backend/venv/bin/gunicorn -w 4 -b 127.0.0.1:5000 'backend.app:create_app()' -D
+# 使用 Gunicorn 启动（根目录下启动）
+gunicorn -w 4 -b 127.0.0.1:5000 'backend.app:create_app()' -D
 
 # 查看进程
 ps aux | grep gunicorn
 # 砍掉进程
 pkill gunicorn
+# 退出虚拟环境
+deactivate
 5. 前端部署
 # 安装依赖并打包
 cd ../frontend
@@ -87,6 +91,8 @@ sudo nginx -t
 sudo systemctl restart nginx
 # 查看nginx配置
 cat /etc/nginx/sites-available/default
+# 查看你nginx是否能访问后端
+sudo tail -n 50 /var/log/nginx/error.log
 6. 测试
 # 前端
 http://服务器公网ip/
