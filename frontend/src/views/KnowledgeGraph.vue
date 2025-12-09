@@ -33,31 +33,18 @@
             <el-option label="并发症" value="complication" />
           </el-select>
         </el-col>
-        <el-col :span="6">
+        <el-col :span="5">
           <div class="graph-info">
             <el-tag :type="databaseStatusType" size="small">
               {{ databaseStatus }}
             </el-tag>
           </div>
         </el-col>
-        <el-col :span="6">
+        <el-col :span="5">
           <div class="graph-info">
             <el-tag type="info" size="small">
               节点: {{ filteredNodes.length }} | 连接: {{ filteredLinks.length }}
             </el-tag>
-          </div>
-        </el-col>
-        <el-col :span="6">
-          <div class="graph-actions">
-            <el-button 
-              size="small" 
-              @click="refreshData" 
-              :loading="isRefreshing"
-              plain
-            >
-              <el-icon><Refresh /></el-icon>
-              刷新数据
-            </el-button>
           </div>
         </el-col>
       </el-row>
@@ -72,40 +59,49 @@
       <svg v-show="!isLoading" ref="svg" :width="svgWidth" :height="svgHeight"></svg>
     </div>
 
-    <!-- 节点详情面板 -->
+    <!-- 节点详情面板 - Neo4j 风格 -->
     <el-drawer
       v-model="showDetails"
-      :title="selectedNode ? '节点详情 - ' + selectedNode.label : '节点详情'"
+      title="Node properties"
       direction="rtl"
-      size="35%"
+      size="400px"
+      :show-close="true"
     >
-      <div v-if="selectedNode" class="neo4j-details-panel">
-        <!-- 节点基本信息 -->
-        <div class="node-header">
-          <div class="node-icon" :style="{ backgroundColor: nodeColors[selectedNode.group] || '#999' }">
-            {{ getNodeTypeIcon(selectedNode.group) }}
+      <div v-if="selectedNode" class="neo4j-properties-panel">
+        <!-- 节点标题 -->
+        <div class="neo4j-node-title">
+          <div class="node-icon-circle" :style="{ backgroundColor: nodeColors[selectedNode.group] || '#999' }">
           </div>
-          <div class="node-basic-info">
-            <h3>{{ selectedNode.label }}</h3>
-            <el-tag :type="getNodeTypeColor(selectedNode.group)" size="default">
-              {{ selectedNode.type }}
-            </el-tag>
-            <el-tag v-if="selectedNode.group === 'disease'" type="danger" size="small">
-              ID: {{ selectedNode.id }}
-            </el-tag>
-          </div>
+          <div class="node-name">{{ selectedNode.label }}</div>
         </div>
-        
-        <!-- 节点属性信息 -->
-        <div class="node-properties" v-if="selectedNode.properties">
-          <h5>
-            <el-icon><Document /></el-icon>
-            属性信息
-          </h5>
-          <div class="properties-grid">
-            <div class="property-card" v-for="(value, key) in selectedNode.properties" :key="key" v-if="value">
-              <div class="property-key">{{ formatPropertyKey(key) }}</div>
-              <div class="property-value">{{ value }}</div>
+
+        <!-- 节点标签 -->
+        <div class="neo4j-node-labels">
+          <el-tag
+            :style="{
+              backgroundColor: nodeColors[selectedNode.group] || '#999',
+              border: 'none',
+              color: '#fff',
+              fontWeight: '500',
+              fontSize: '13px',
+              padding: '6px 12px'
+            }"
+            size="default"
+          >
+            {{ getNodeTypeText(selectedNode.group) }}
+          </el-tag>
+        </div>
+
+        <!-- 节点属性列表 -->
+        <div class="neo4j-properties-list" v-if="selectedNode.properties">
+          <div
+            class="neo4j-property-item"
+            v-for="(value, key) in getFilteredProperties(selectedNode.properties)"
+            :key="key"
+          >
+            <div class="property-row">
+              <span class="property-label">{{ formatPropertyKey(key) }}</span>
+              <span class="property-value">{{ value }}</span>
             </div>
           </div>
         </div>
@@ -128,7 +124,7 @@
 
 <script>
 import { ref, onMounted, nextTick, computed, watch } from 'vue'
-import { knowledgeApi,knowledgeTestApi } from '../utils/api'
+import { knowledgeApi, knowledgeTestApi } from '../utils/api'
 import { ElMessage } from 'element-plus'
 import * as d3 from 'd3'
 
@@ -143,25 +139,25 @@ export default {
     const selectedNode = ref(null)
     const selectedNodeType = ref('')
     const isRefreshing = ref(false)
-    
+
     const svgWidth = ref(800)
     const svgHeight = ref(600)
-    
+
     // 数据库状态
     const databaseStatus = ref('检查中...')
     const databaseStatusType = ref('info')
-    
+
     const graphData = ref({ nodes: [], links: [] })
-    
-    // 节点颜色映射，适配新的实体类型
+
+    // 节点颜色映射
     const nodeColors = {
-      disease: '#e74c3c',      // 疾病 - 红色
-      treatment: '#3498db',    // 治疗 - 蓝色
-      examination: '#f39c12',  // 检查 - 橙色
-      medication: '#9b59b6',   // 药物 - 紫色
-      vital_signs: '#1abc9c',  // 生命体征 - 青色
-      complication: '#e67e22', // 并发症 - 深橙色
-      other: '#95a5a6'         // 其他 - 灰色
+      disease: '#e74c3c',
+      treatment: '#3498db',
+      examination: '#f39c12',
+      medication: '#9b59b6',
+      vital_signs: '#1abc9c',
+      complication: '#e67e22',
+      other: '#95a5a6'
     }
 
     // 计算过滤后的节点和连接
@@ -171,12 +167,10 @@ export default {
     })
 
     const filteredLinks = computed(() => {
-      // 如果没有筛选，返回所有连线
       if (!selectedNodeType.value) {
         return graphData.value.links
       }
-      
-      // 如果有筛选，只显示与选中节点类型相关的连线
+
       const nodeIds = new Set(filteredNodes.value.map(node => node.id))
       return graphData.value.links.filter(link => {
         const sourceId = typeof link.source === 'object' ? link.source.id : link.source
@@ -208,10 +202,10 @@ export default {
       try {
         isLoading.value = true
         await checkDatabaseStatus()
-        
+
         const response = await knowledgeApi.getKnowledgeGraph()
         graphData.value = response
-        
+
         await nextTick()
         renderGraph()
       } catch (error) {
@@ -222,44 +216,19 @@ export default {
       }
     }
 
-    // 刷新数据
-    const refreshData = async () => {
-      isRefreshing.value = true
-      try {
-        await checkDatabaseStatus()
-        await initGraph()
-        ElMessage.success('数据刷新成功')
-      } catch (error) {
-        console.error('刷新数据失败:', error)
-        ElMessage.error('刷新数据失败')
-      } finally {
-        isRefreshing.value = false
-      }
-    }
-
-    // 渲染图谱
+    // 渲染图谱 - Neo4j 风格
     const renderGraph = () => {
       if (!svg.value || !graphContainer.value) return
 
-      // 调试信息
-      console.log('渲染图谱 - 节点数量:', filteredNodes.value.length)
-      console.log('渲染图谱 - 连线数量:', filteredLinks.value.length)
-      console.log('渲染图谱 - 节点数据:', filteredNodes.value.slice(0, 2))
-      console.log('渲染图谱 - 连线数据:', filteredLinks.value.slice(0, 2))
-
-      // 获取容器尺寸
       const containerRect = graphContainer.value.getBoundingClientRect()
       svgWidth.value = containerRect.width - 20
-      // 使用更合适的边距，避免过度预留空间
       svgHeight.value = containerRect.height - 20
 
-      // 清空之前的内容
       d3.select(svg.value).selectAll('*').remove()
 
       const svgElement = d3.select(svg.value)
       const g = svgElement.append('g')
 
-      // 设置缩放行为
       const zoom = d3.zoom()
         .scaleExtent([0.1, 4])
         .on('zoom', (event) => {
@@ -268,174 +237,158 @@ export default {
 
       svgElement.call(zoom)
 
-      // 创建力导向图
       const simulation = d3.forceSimulation(filteredNodes.value)
-        .force('link', d3.forceLink(filteredLinks.value).id(d => d.id).distance(80))
-        .force('charge', d3.forceManyBody().strength(-250))
+        .force('link', d3.forceLink(filteredLinks.value).id(d => d.id).distance(120))
+        .force('charge', d3.forceManyBody().strength(-300))
         .force('center', d3.forceCenter(svgWidth.value / 2, svgHeight.value / 2))
-        .force('collision', d3.forceCollide().radius(25))
+        .force('collision', d3.forceCollide().radius(30))
 
-      // 自动缩放函数
-      const autoFit = () => {
-        if (filteredNodes.value.length === 0) return
-        
-        // 计算图谱的边界
-        const bounds = g.node().getBBox()
-        const parent = g.node().parentNode
-        const fullWidth = svgWidth.value
-        const fullHeight = svgHeight.value
-        
-        const width = bounds.width
-        const height = bounds.height
-        
-        if (width === 0 || height === 0) return
-        
-        // 计算缩放比例，留一些边距
-        const scale = 0.85 / Math.max(width / fullWidth, height / fullHeight)
-        const translate = [
-          fullWidth / 2 - scale * (bounds.x + width / 2),
-          fullHeight / 2 - scale * (bounds.y + height / 2)
-        ]
-        
-        // 应用变换
-        const transform = d3.zoomIdentity.translate(translate[0], translate[1]).scale(scale)
-        svgElement.transition().duration(1000).call(zoom.transform, transform)
-      }
-
-      // 绘制连接线
+      // 绘制连接线 - Neo4j 风格
       const links = g.append('g')
         .attr('class', 'links')
         .selectAll('line')
         .data(filteredLinks.value)
         .enter().append('line')
-        .attr('stroke', '#9aa0a6')
-        .attr('stroke-opacity', 0.7)
-        .attr('stroke-width', d => Math.sqrt(d.value || 1))
-        .style('cursor', 'pointer')
-        .on('mouseover', function(event, d) {
-          d3.select(this).attr('stroke-width', Math.sqrt(d.value || 1) * 1.5).attr('stroke-opacity', 1)
-          
-          // 显示关系标签的悬浮效果
-          const linkLabel = g.selectAll('.link-label')
-          linkLabel.style('opacity', link => link === d ? 1 : 0.3)
-        })
-        .on('mouseout', function(event, d) {
-          d3.select(this).attr('stroke-width', Math.sqrt(d.value || 1)).attr('stroke-opacity', 0.7)
-          
-          // 恢复关系标签的正常显示
-          const linkLabel = g.selectAll('.link-label')
-          linkLabel.style('opacity', 1)
-        })
-        .style('display', filteredLinks.value.length > 0 ? 'block' : 'none')
-
-      // 绘制节点
-      const nodes = g.append('g')
-        .selectAll('circle')
-        .data(filteredNodes.value)
-        .enter().append('circle')
-        .attr('r', 15)
-        .attr('fill', d => nodeColors[d.group] || '#999')
-        .attr('stroke', '#fff')
+        .attr('stroke', '#a5abb3')
+        .attr('stroke-opacity', 0.5)
         .attr('stroke-width', 2)
         .style('cursor', 'pointer')
-        .on('click', (event, d) => {
-          selectedNode.value = d
-          showDetails.value = true
-        })
         .on('mouseover', function(event, d) {
-          d3.select(this).attr('r', 18)
+          d3.select(this)
+            .attr('stroke', '#4c8eda')
+            .attr('stroke-width', 3)
+            .attr('stroke-opacity', 0.8)
+
+          g.selectAll('.link-label').style('opacity', link => link === d ? 1 : 0.2)
         })
         .on('mouseout', function(event, d) {
-          d3.select(this).attr('r', 15)
+          d3.select(this)
+            .attr('stroke', '#a5abb3')
+            .attr('stroke-width', 2)
+            .attr('stroke-opacity', 0.5)
+
+          g.selectAll('.link-label').style('opacity', 0.85)
         })
+
+      // 创建节点组
+      const nodeGroup = g.append('g')
+        .selectAll('g')
+        .data(filteredNodes.value)
+        .enter().append('g')
+        .attr('class', 'node-group')
+        .style('cursor', 'pointer')
         .call(d3.drag()
           .on('start', dragstarted)
           .on('drag', dragged)
           .on('end', dragended)
         )
 
-      // 添加节点标签
-      const labels = g.append('g')
-        .selectAll('.node-label')
-        .data(filteredNodes.value)
-        .enter().append('text')
-        .attr('class', 'node-label')
-        .text(d => d.label)
+      // 添加阴影
+      nodeGroup.append('circle')
+        .attr('r', 22)
+        .attr('fill', '#000')
+        .attr('opacity', 0.15)
+        .attr('cx', 2)
+        .attr('cy', 2)
+
+      // 主圆形节点
+      nodeGroup.append('circle')
+        .attr('r', 20)
+        .attr('fill', d => nodeColors[d.group] || '#999')
+        .attr('stroke', '#fff')
+        .attr('stroke-width', 3)
+        .on('click', (event, d) => {
+          selectedNode.value = d
+          showDetails.value = true
+        })
+        .on('mouseover', function(event, d) {
+          d3.select(this.parentNode).select('circle:first-child')
+            .transition().duration(200)
+            .attr('r', 26)
+            .attr('opacity', 0.25)
+          d3.select(this)
+            .transition().duration(200)
+            .attr('r', 24)
+        })
+        .on('mouseout', function(event, d) {
+          d3.select(this.parentNode).select('circle:first-child')
+            .transition().duration(200)
+            .attr('r', 22)
+            .attr('opacity', 0.15)
+          d3.select(this)
+            .transition().duration(200)
+            .attr('r', 20)
+        })
+
+      // 在节点中心添加标签（带省略号处理）
+      nodeGroup.append('text')
+        .attr('class', 'node-center-label')
+        .text(d => {
+          const label = d.label || ''
+          // 根据节点大小限制字符数（圆形半径20，大约能容纳3-4个中文字符）
+          return label.length > 4 ? label.substring(0, 4) + '...' : label
+        })
         .attr('font-size', 11)
-        .attr('dx', 20)
-        .attr('dy', 4)
-        .attr('fill', '#2d3748')
-        .attr('font-weight', 'bold')
-        .style('pointer-events', 'none')
-        .style('text-shadow', '1px 1px 2px rgba(255,255,255,0.8)')
-        .style('display', showLabels.value ? 'block' : 'none')
-        
-      // 添加关系标签
-      const linkLabels = g.append('g')
-        .attr('class', 'link-labels')
-        .selectAll('.link-label')
-        .data(filteredLinks.value)
-        .enter().append('text')
-        .attr('class', 'link-label')
-        .text(d => d.relationshipType || '')
-        .attr('font-size', 10)
-        .attr('fill', '#4a5568')
+        .attr('font-weight', '500')
+        .attr('fill', '#fff')
         .attr('text-anchor', 'middle')
-        .attr('stroke', 'white')
-        .attr('stroke-width', 0.5)
-        .attr('paint-order', 'stroke')
+        .attr('dominant-baseline', 'middle')
+        .attr('font-family', "'Segoe UI', 'Microsoft YaHei', sans-serif")
         .style('pointer-events', 'none')
-        .style('font-style', 'italic')
-        .style('opacity', 0.8)
+        .style('display', showLabels.value ? 'block' : 'none')
+
+      // 添加关系标签 - Neo4j 风格（在连线上方显示）
+      const linkLabelGroups = g.append('g')
+        .attr('class', 'link-labels')
+        .selectAll('.link-label-group')
+        .data(filteredLinks.value)
+        .enter().append('g')
+        .attr('class', 'link-label-group')
+
+      // 添加文字
+      linkLabelGroups.append('text')
+        .attr('class', 'link-label-text')
+        .text(d => d.relationshipType || '')
+        .attr('font-size', 9)
+        .attr('fill', '#717171')
+        .attr('text-anchor', 'middle')
+        .attr('dominant-baseline', 'middle')
+        .attr('font-family', "'Segoe UI', 'Microsoft YaHei', sans-serif")
+        .style('pointer-events', 'none')
+        .style('font-weight', '400')
 
       // 更新位置
       simulation.on('tick', () => {
         links
-          .attr('x1', d => {
-            const source = typeof d.source === 'object' ? d.source : {x: 0, y: 0}
-            return source.x || 0
-          })
-          .attr('y1', d => {
-            const source = typeof d.source === 'object' ? d.source : {x: 0, y: 0}
-            return source.y || 0
-          })
-          .attr('x2', d => {
-            const target = typeof d.target === 'object' ? d.target : {x: 0, y: 0}
-            return target.x || 0
-          })
-          .attr('y2', d => {
-            const target = typeof d.target === 'object' ? d.target : {x: 0, y: 0}
-            return target.y || 0
-          })
+          .attr('x1', d => (typeof d.source === 'object' ? d.source.x : 0) || 0)
+          .attr('y1', d => (typeof d.source === 'object' ? d.source.y : 0) || 0)
+          .attr('x2', d => (typeof d.target === 'object' ? d.target.x : 0) || 0)
+          .attr('y2', d => (typeof d.target === 'object' ? d.target.y : 0) || 0)
 
-        nodes
-          .attr('cx', d => d.x || 0)
-          .attr('cy', d => d.y || 0)
+        nodeGroup.attr('transform', d => `translate(${d.x || 0}, ${d.y || 0})`)
 
-        labels
-          .attr('x', d => (d.x || 0) + 20)
-          .attr('y', d => (d.y || 0) + 4)
-          
-        // 更新关系标签位置（在连线中点显示）
-        linkLabels
-          .attr('x', d => {
-            const source = typeof d.source === 'object' ? d.source : {x: 0, y: 0}
-            const target = typeof d.target === 'object' ? d.target : {x: 0, y: 0}
-            return ((source.x || 0) + (target.x || 0)) / 2
-          })
-          .attr('y', d => {
-            const source = typeof d.source === 'object' ? d.source : {x: 0, y: 0}
-            const target = typeof d.target === 'object' ? d.target : {x: 0, y: 0}
-            return ((source.y || 0) + (target.y || 0)) / 2
-          })
-      })
-      
-      // 仿真完成后自动缩放适配
-      simulation.on('end', () => {
-        // 延迟一下确保所有元素都已渲染
-        setTimeout(() => {
-          autoFit()
-        }, 100)
+        // 更新关系标签位置
+        linkLabelGroups.each(function(d) {
+          const sx = (typeof d.source === 'object' ? d.source.x : 0) || 0
+          const sy = (typeof d.source === 'object' ? d.source.y : 0) || 0
+          const tx = (typeof d.target === 'object' ? d.target.x : 0) || 0
+          const ty = (typeof d.target === 'object' ? d.target.y : 0) || 0
+
+          const mx = (sx + tx) / 2
+          const my = (sy + ty) / 2
+
+          // 计算连线的角度
+          const dx = tx - sx
+          const dy = ty - sy
+          const angle = Math.atan2(dy, dx) * 180 / Math.PI
+
+          // 更新文字位置和旋转
+          const text = d3.select(this).select('.link-label-text')
+          text
+            .attr('x', mx)
+            .attr('y', my - 8)  // 向上偏移一点
+            .attr('transform', `rotate(${angle}, ${mx}, ${my - 8})`)
+        })
       })
 
       // 拖拽函数
@@ -469,22 +422,8 @@ export default {
     // 切换标签显示
     const toggleLabels = () => {
       showLabels.value = !showLabels.value
-      const labels = d3.select(svg.value).selectAll('text')
+      const labels = d3.select(svg.value).selectAll('.node-center-label')
       labels.style('display', showLabels.value ? 'block' : 'none')
-    }
-
-    // 获取节点类型颜色
-    const getNodeTypeColor = (type) => {
-      const colorMap = {
-        disease: 'danger',
-        treatment: 'primary', 
-        examination: 'warning',
-        medication: 'info',
-        vital_signs: 'success',
-        complication: '',
-        other: 'info'
-      }
-      return colorMap[type] || 'info'
     }
 
     // 获取节点类型文本
@@ -492,7 +431,7 @@ export default {
       const textMap = {
         disease: '疾病',
         treatment: '治疗',
-        examination: '检查', 
+        examination: '检查',
         medication: '药物',
         vital_signs: '生命体征',
         complication: '并发症',
@@ -501,37 +440,26 @@ export default {
       return textMap[type] || type
     }
 
-    // 获取节点连接
-    const getNodeConnections = (nodeId) => {
-      return graphData.value.links.filter(link => 
-        link.source === nodeId || link.target === nodeId ||
-        link.source.id === nodeId || link.target.id === nodeId
-      )
-    }
-
-    // 获取节点名称
-    const getNodeName = (nodeId) => {
-      const node = graphData.value.nodes.find(n => n.id === nodeId)
-      return node ? node.label : nodeId
-    }
-
-    // 获取节点类型图标
-    const getNodeTypeIcon = (type) => {
-      const iconMap = {
-        disease: '🏥',
-        treatment: '⚕️',
-        examination: '🔬',
-        medication: '💊',
-        vital_signs: '📊',
-        complication: '⚠️',
-        other: '🔵'
-      }
-      return iconMap[type] || '🔵'
+    // 过滤属性 - 移除不需要显示的字段
+    const getFilteredProperties = (properties) => {
+      if (!properties) return {}
+      const filtered = {}
+      Object.keys(properties).forEach(key => {
+        if (properties[key] &&
+            key !== 'id' &&
+            key !== 'elementId' &&
+            key !== 'type' &&
+            key !== 'label') {
+          filtered[key] = properties[key]
+        }
+      })
+      return filtered
     }
 
     // 格式化属性键
     const formatPropertyKey = (key) => {
       const keyMap = {
+        'name': 'name',
         '严重程度': '严重程度',
         '紧急程度': '紧急程度',
         '所属系统': '所属系统',
@@ -554,42 +482,6 @@ export default {
       return keyMap[key] || key
     }
 
-    // 获取关系方向
-    const getRelationshipDirection = (currentNodeId, link) => {
-      const sourceId = typeof link.source === 'object' ? link.source.id : link.source
-      const targetId = typeof link.target === 'object' ? link.target.id : link.target
-      
-      if (sourceId === currentNodeId) {
-        return '→'
-      } else if (targetId === currentNodeId) {
-        return '←'
-      }
-      return '↔'
-    }
-
-    // 获取关系类型颜色
-    const getRelationshipTypeColor = (relationshipType) => {
-      const colorMap = {
-        '需要治疗': 'danger',
-        '需要检查': 'warning',
-        '使用药物': 'info',
-        '监测指标': 'success',
-        '引起并发症': 'danger',
-        '治疗': 'primary',
-        '检查': 'warning',
-        '药物': 'info',
-        '指标': 'success',
-        '并发症': 'danger'
-      }
-      return colorMap[relationshipType] || 'info'
-    }
-
-    // 突出显示连接
-    const highlightConnection = (link) => {
-      // 这里可以添加高亮特定连接的逻辑
-      console.log('高亮连接:', link)
-    }
-
     // 监听节点类型筛选变化
     watch(selectedNodeType, () => {
       renderGraph()
@@ -606,7 +498,6 @@ export default {
       graphContainer,
       svg,
       isLoading,
-      isRefreshing,
       showLabels,
       showDetails,
       selectedNode,
@@ -620,17 +511,9 @@ export default {
       filteredLinks,
       resetView,
       toggleLabels,
-      refreshData,
-      checkDatabaseStatus,
-      getNodeTypeColor,
       getNodeTypeText,
-      getNodeTypeIcon,
-      formatPropertyKey,
-      getRelationshipDirection,
-      getRelationshipTypeColor,
-      highlightConnection,
-      getNodeConnections,
-      getNodeName
+      getFilteredProperties,
+      formatPropertyKey
     }
   }
 }
@@ -670,19 +553,14 @@ export default {
   border-bottom: 1px solid #e4e7ed;
 }
 
-.graph-actions {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-}
-
 .graph-container {
   flex: 1;
   position: relative;
   margin: 10px;
-  background: white;
+  background: #fafafa;
   border-radius: 8px;
   overflow: hidden;
+  border: 1px solid #e4e7ed;
 }
 
 .loading {
@@ -705,162 +583,76 @@ export default {
   to { transform: rotate(360deg); }
 }
 
-/* Neo4j风格详情面板样式 */
-.neo4j-details-panel {
+/* Neo4j风格属性面板 */
+.neo4j-properties-panel {
   font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif;
+  padding: 0;
 }
 
-.node-header {
+.neo4j-node-title {
   display: flex;
   align-items: center;
-  gap: 16px;
-  padding: 16px;
-  background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
-  border-radius: 8px;
-  margin-bottom: 20px;
-  border: 1px solid #dee2e6;
+  gap: 12px;
+  padding: 16px 0;
+  border-bottom: 1px solid #e4e7ed;
+  margin-bottom: 16px;
 }
 
-.node-icon {
-  width: 48px;
-  height: 48px;
+.node-icon-circle {
+  width: 40px;
+  height: 40px;
   border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 20px;
-  color: white;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+  border: 3px solid #fff;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+  flex-shrink: 0;
 }
 
-.node-basic-info h3 {
-  margin: 0 0 8px 0;
-  color: #2d3748;
+.node-name {
   font-size: 18px;
   font-weight: 600;
+  color: #2d3748;
+  word-break: break-word;
 }
 
-.node-properties {
-  margin-bottom: 24px;
+.neo4j-node-labels {
+  margin-bottom: 20px;
 }
 
-.node-properties h5 {
-  margin: 0 0 12px 0;
-  color: #4a5568;
-  font-size: 14px;
-  font-weight: 600;
+.neo4j-properties-list {
   display: flex;
-  align-items: center;
-  gap: 8px;
+  flex-direction: column;
+  gap: 0;
 }
 
-.properties-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-  gap: 12px;
+.neo4j-property-item {
+  border-bottom: 1px solid #f0f0f0;
+  padding: 12px 0;
 }
 
-.property-card {
-  background: #ffffff;
-  border: 1px solid #e2e8f0;
-  border-radius: 6px;
-  padding: 12px;
-  transition: all 0.2s ease;
+.neo4j-property-item:last-child {
+  border-bottom: none;
 }
 
-.property-card:hover {
-  border-color: #cbd5e0;
-  box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+.property-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 
-.property-key {
+.property-label {
   font-size: 12px;
   color: #718096;
   font-weight: 500;
   text-transform: uppercase;
   letter-spacing: 0.5px;
-  margin-bottom: 4px;
 }
 
 .property-value {
   font-size: 14px;
   color: #2d3748;
-  font-weight: 500;
-}
-
-.node-connections {
-  margin-top: 24px;
-}
-
-.node-connections h5 {
-  margin: 0 0 16px 0;
-  color: #4a5568;
-  font-size: 14px;
-  font-weight: 600;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.connections-list {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.connection-item {
-  background: #ffffff;
-  border: 1px solid #e2e8f0;
-  border-radius: 6px;
-  padding: 12px;
-  cursor: pointer;
-  transition: all 0.2s ease;
-}
-
-.connection-item:hover {
-  border-color: #3182ce;
-  box-shadow: 0 2px 8px rgba(49, 130, 206, 0.1);
-  transform: translateY(-1px);
-}
-
-.connection-main {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 8px;
-}
-
-.connected-node {
-  font-size: 14px;
-  color: #2d3748;
-  font-weight: 500;
-}
-
-.relationship-arrow {
-  font-size: 16px;
-  color: #718096;
-  font-weight: bold;
-  margin: 0 8px;
-}
-
-.relationship-tag {
-  margin-bottom: 8px;
-}
-
-.relation-properties {
-  margin-top: 8px;
-}
-
-.property-tags {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-}
-
-.relation-property-tag {
-  font-size: 11px !important;
-  height: 20px !important;
-  line-height: 18px !important;
+  font-weight: 400;
+  line-height: 1.5;
+  word-break: break-word;
 }
 
 /* 图例样式 */
@@ -908,45 +700,37 @@ export default {
 }
 
 /* SVG图形样式 - Neo4j风格 */
-:deep(.node) {
-  filter: drop-shadow(0 2px 4px rgba(0,0,0,0.1));
+:deep(.node-group) {
   transition: all 0.2s ease;
 }
 
-:deep(.node:hover) {
-  filter: drop-shadow(0 4px 8px rgba(0,0,0,0.2));
+:deep(.node-group:hover) {
+  filter: brightness(1.1);
 }
 
 :deep(.link) {
   transition: all 0.2s ease;
 }
 
-:deep(.node-label) {
+:deep(.node-center-label) {
   user-select: none;
   font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif;
 }
 
-:deep(.link-label) {
+:deep(.link-label-text) {
   user-select: none;
   font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif;
-  text-shadow: 1px 1px 2px rgba(255,255,255,0.9);
+}
+
+:deep(.link-label-bg) {
+  opacity: 0.9;
 }
 
 /* 响应式设计 */
 @media (max-width: 768px) {
-  .node-header {
+  .neo4j-node-title {
     flex-direction: column;
     text-align: center;
-  }
-  
-  .properties-grid {
-    grid-template-columns: 1fr;
-  }
-  
-  .connection-main {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 4px;
   }
 }
 </style>
