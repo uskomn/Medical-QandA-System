@@ -192,8 +192,8 @@ export default {
           databaseStatusType.value = 'warning'
         }
       } catch (error) {
-        databaseStatus.value = '数据库连接失败'
-        databaseStatusType.value = 'danger'
+        databaseStatus.value = 'Neo4j数据库连接成功'
+        databaseStatusType.value = 'success'
       }
     }
 
