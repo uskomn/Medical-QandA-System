@@ -1,7 +1,16 @@
 from flask import Blueprint,request,jsonify
+from backend.app.utils.kg_retrieval import KnowledgeGraphRetrieval
 from datetime import datetime
+import os
 
 chat_bp=Blueprint('chat',__name__)
+
+NEO4J_URI = "bolt://localhost:7687"
+NEO4J_USER = "neo4j"
+NEO4J_PASSWORD = "aqzdwsfneo"
+DEEPSEEK_API_KEY = os.getenv('DEEPSEEK_API_KEY') or "sk-8cbf10f456ae40aba1be330eaa3c2397"
+
+retrieval=KnowledgeGraphRetrieval(NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD,DEEPSEEK_API_KEY)
 
 @chat_bp.route('/answer_questions',methods=['POST'])
 def chat():
@@ -12,7 +21,7 @@ def chat():
         if not user_message:
             return jsonify({"error":"消息不能为空"}),400
 
-        response="问答接口尚需开发，请等待"
+        response=retrieval.controlled_generation_with_subgraph(user_message,use_consistency=True,use_reasoning=True)
 
         return jsonify({
             "response":response,
