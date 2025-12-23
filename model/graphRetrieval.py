@@ -6,21 +6,32 @@ import requests
 import os
 
 
+
 class KnowledgeGraphRetrieval:
     """知识图谱检索与推理系统"""
 
     def __init__(self, neo4j_uri: str, neo4j_user: str, neo4j_password: str,
                  deepseek_api_key: str = None):
-        """
-        初始化
-        Args:
-            neo4j_uri: Neo4j数据库URI
-            neo4j_user: 用户名
-            neo4j_password: 密码
-            deepseek_api_key: DeepSeek API密钥
-        """
-        self.driver = GraphDatabase.driver(neo4j_uri, auth=(neo4j_user, neo4j_password))
+        """初始化"""
+        # 验证 Neo4j 连接
+        try:
+            self.driver = GraphDatabase.driver(neo4j_uri, auth=(neo4j_user, neo4j_password))
+            with self.driver.session() as session:
+                session.run("RETURN 1")
+            print("✓ Neo4j 连接成功")
+        except Exception as e:
+            print(f"✗ Neo4j 连接失败: {e}")
+            raise
+
+        # 验证 DeepSeek API
         self.deepseek_api_key = deepseek_api_key or os.getenv('DEEPSEEK_API_KEY')
+        if not self.deepseek_api_key or self.deepseek_api_key == "your_api_key":
+            print("⚠️  DeepSeek API key 未配置,将使用简化方法")
+            self.use_llm = False
+        else:
+            self.use_llm = True
+            print("✓ DeepSeek API key 已配置")
+
         self.deepseek_api_url = "https://api.deepseek.com/v1/chat/completions"
 
     def close(self):
@@ -31,25 +42,15 @@ class KnowledgeGraphRetrieval:
 
     def retrieve_relevant_subgraph(self, query: str, max_depth: int = 2,
                                    top_k: int = 10) -> Dict[str, Any]:
-        """
-        检索相关子图
-        Args:
-            query: 用户查询
-            max_depth: 最大检索深度
-            top_k: 返回top-k个最相关的路径
-        Returns:
-            子图数据
-        """
+        """检索相关子图"""
         print(f"\n{'=' * 60}")
         print(f"🔍 开始检索相关子图")
         print(f"查询: {query}")
         print(f"{'=' * 60}\n")
 
-        # 1. 提取查询中的关键实体
         entities = self._extract_entities_from_query(query)
         print(f"✓ 提取到关键实体: {entities}\n")
 
-        # 2. 在图谱中查找匹配的节点
         matched_nodes = self._find_matching_nodes(entities)
         print(f"✓ 匹配到 {len(matched_nodes)} 个图谱节点\n")
 
@@ -57,7 +58,6 @@ class KnowledgeGraphRetrieval:
             print("✗ 未找到匹配节点\n")
             return {"nodes": [], "relationships": [], "paths": []}
 
-        # 3. 扩展子图(BFS)
         subgraph = self._expand_subgraph(matched_nodes, max_depth, top_k)
         print(f"✓ 扩展子图完成:")
         print(f"  - 节点数: {len(subgraph['nodes'])}")
@@ -68,49 +68,44 @@ class KnowledgeGraphRetrieval:
 
     def _extract_entities_from_query(self, query: str) -> List[str]:
         """从查询中提取关键实体"""
-        prompt = f"""从以下医疗问题中提取关键实体(疾病、治疗、药物、检查等)。
+        if self.use_llm:
+            prompt = f"""从以下医疗问题中提取关键实体(疾病、治疗、药物、检查等)。
 
 问题: {query}
 
 只返回JSON数组,格式: ["实体1", "实体2", ...]
-
-示例:
-问题: 心脏骤停应该如何急救?
-输出: ["心脏骤停", "急救"]
 """
+            try:
+                response = self._call_deepseek(prompt, max_tokens=200, temperature=0)
+                response = re.sub(r'```json\s*', '', response.strip())
+                response = re.sub(r'```\s*', '', response)
+                entities = json.loads(response)
+                if isinstance(entities, list) and entities:
+                    return entities
+            except Exception as e:
+                print(f"⚠️  LLM 提取失败: {e}, 使用备用方法")
 
+        # 备用方法
+        keywords = []
         try:
-            response = self._call_deepseek(prompt, max_tokens=200, temperature=0)
-            response = response.strip()
-
-            # 清理markdown
-            response = re.sub(r'```json\s*', '', response)
-            response = re.sub(r'```\s*', '', response)
-
-            entities = json.loads(response)
-            return entities if isinstance(entities, list) else []
-        except:
-            # 如果失败,使用简单的关键词提取
-            keywords = []
             with self.driver.session() as session:
-                # 查找查询中提到的所有节点名称
                 result = session.run("""
                     MATCH (n)
-                    WHERE $query CONTAINS n.name
+                    WHERE $query_text CONTAINS n.name
                     RETURN DISTINCT n.name as name
                     LIMIT 10
-                """, query=query)
+                """, query_text=query)
                 keywords = [record['name'] for record in result]
+        except Exception as e:
+            print(f"⚠️  图谱匹配失败: {e}")
 
-            return keywords if keywords else [query]
+        return keywords if keywords else [query]
 
     def _find_matching_nodes(self, entities: List[str]) -> List[Dict]:
         """查找匹配的图谱节点"""
         matched = []
-
         with self.driver.session() as session:
             for entity in entities:
-                # 模糊匹配
                 result = session.run("""
                     MATCH (n)
                     WHERE n.name CONTAINS $entity
@@ -128,7 +123,6 @@ class KnowledgeGraphRetrieval:
                         'name': record['name'],
                         'properties': dict(record['properties'])
                     })
-
         return matched
 
     def _expand_subgraph(self, seed_nodes: List[Dict], max_depth: int,
@@ -137,7 +131,6 @@ class KnowledgeGraphRetrieval:
         node_ids = [node['id'] for node in seed_nodes]
 
         with self.driver.session() as session:
-            # 查询子图路径
             result = session.run(f"""
                 MATCH path = (start)-[*1..{max_depth}]-(end)
                 WHERE id(start) IN $node_ids
@@ -161,7 +154,6 @@ class KnowledgeGraphRetrieval:
                 LIMIT $top_k
             """, node_ids=node_ids, top_k=top_k)
 
-            # 收集所有节点和关系
             all_nodes = {}
             all_relationships = []
             all_paths = []
@@ -170,13 +162,11 @@ class KnowledgeGraphRetrieval:
                 nodes = record['nodes']
                 rels = record['relationships']
 
-                # 收集节点
                 for node in nodes:
                     node_id = node['id']
                     if node_id not in all_nodes:
                         all_nodes[node_id] = node
 
-                # 收集关系
                 for i, rel in enumerate(rels):
                     rel_data = {
                         'from': nodes[i]['id'],
@@ -188,7 +178,6 @@ class KnowledgeGraphRetrieval:
                     }
                     all_relationships.append(rel_data)
 
-                # 记录路径
                 path_desc = ' -> '.join([
                                             f"{nodes[i]['name']}[{rels[i]['type']}]"
                                             for i in range(len(rels))
@@ -207,140 +196,13 @@ class KnowledgeGraphRetrieval:
                 'paths': all_paths
             }
 
-    # ========== 2. 自一致性检索 (改进版) ==========
-
-    def self_consistency_retrieval(self, query: str, num_samples: int = 3) -> Dict[str, Any]:
-        """
-        自一致性检索: 多次检索取一致结果,构建高置信度子图
-        Args:
-            query: 查询
-            num_samples: 采样次数
-        Returns:
-            高一致性子图 (用于生成)
-        """
-        print(f"\n{'=' * 60}")
-        print(f"🔄 自一致性检索 (采样{num_samples}次)")
-        print(f"{'=' * 60}\n")
-
-        # 1. 多次检索
-        all_subgraphs = []
-        for i in range(num_samples):
-            print(f"第 {i + 1}/{num_samples} 次检索...")
-            subgraph = self.retrieve_relevant_subgraph(query, max_depth=2, top_k=8)
-            all_subgraphs.append(subgraph)
-
-        print(f"\n✓ 完成 {num_samples} 次检索\n")
-
-        # 2. 统计一致性
-        node_counter = {}  # {(type, name): count}
-        node_data = {}  # {(type, name): node_object}
-        path_counter = {}  # {path_pattern: (count, path_object)}
-        rel_counter = {}  # {(from, to, type): (count, rel_object)}
-
-        for subgraph in all_subgraphs:
-            # 统计节点
-            for node in subgraph['nodes']:
-                key = (node['type'], node['name'])
-                node_counter[key] = node_counter.get(key, 0) + 1
-                if key not in node_data:
-                    node_data[key] = node
-
-            # 统计关系
-            for rel in subgraph['relationships']:
-                key = (rel['from_name'], rel['to_name'], rel['type'])
-                rel_counter[key] = rel_counter.get(key, 0) + 1
-                if key not in path_counter:
-                    rel_counter[key] = (rel_counter[key], rel)
-
-            # 统计路径模式
-            for path in subgraph['paths']:
-                pattern = ' -> '.join([
-                                          f"{path['nodes'][i]['name']}[{path['relationships'][i]['type']}]"
-                                          for i in range(len(path['relationships']))
-                                      ] + [path['nodes'][-1]['name']])
-
-                path_counter[pattern] = path_counter.get(pattern, 0) + 1
-
-        # 3. 构建高一致性子图 (关键改进)
-        threshold = num_samples // 2 + 1  # 超过半数
-
-        # 筛选高一致性节点
-        consistent_nodes = []
-        for (node_type, node_name), count in node_counter.items():
-            if count >= threshold:
-                node = node_data[(node_type, node_name)].copy()
-                node['consistency'] = count / num_samples
-                consistent_nodes.append(node)
-
-        # 筛选高一致性关系
-        consistent_relationships = []
-        for (from_name, to_name, rel_type), count in rel_counter.items():
-            if count >= threshold:
-                # 找到对应的关系对象
-                for subgraph in all_subgraphs:
-                    for rel in subgraph['relationships']:
-                        if (rel['from_name'] == from_name and
-                                rel['to_name'] == to_name and
-                                rel['type'] == rel_type):
-                            rel_copy = rel.copy()
-                            rel_copy['consistency'] = count / num_samples
-                            consistent_relationships.append(rel_copy)
-                            break
-                    else:
-                        continue
-                    break
-
-        # 筛选高一致性路径
-        consistent_paths = []
-        for pattern, count in path_counter.items():
-            if count >= threshold:
-                # 从原始子图中找到该路径
-                for subgraph in all_subgraphs:
-                    for path in subgraph['paths']:
-                        path_pattern = ' -> '.join([
-                                                       f"{path['nodes'][i]['name']}[{path['relationships'][i]['type']}]"
-                                                       for i in range(len(path['relationships']))
-                                                   ] + [path['nodes'][-1]['name']])
-
-                        if path_pattern == pattern:
-                            path_copy = path.copy()
-                            path_copy['consistency'] = count / num_samples
-                            consistent_paths.append(path_copy)
-                            break
-                    else:
-                        continue
-                    break
-
-        print(f"✓ 高一致性子图构建完成:")
-        print(f"  - 一致性节点: {len(consistent_nodes)} 个")
-        print(f"  - 一致性关系: {len(consistent_relationships)} 个")
-        print(f"  - 一致性路径: {len(consistent_paths)} 个\n")
-
-        # 4. 返回高一致性子图 (用于生成)
-        consistent_subgraph = {
-            'nodes': consistent_nodes,
-            'relationships': consistent_relationships,
-            'paths': consistent_paths
-        }
-
-        return {
-            'query': query,
-            'num_samples': num_samples,
-            'consistent_subgraph': consistent_subgraph,  # 关键: 返回一致性子图
-            'all_subgraphs': all_subgraphs,
-            'statistics': {
-                'node_counter': node_counter,
-                'path_counter': path_counter
-            }
-        }
-
-    # ========== 3. 基于子图的控制生成 (改进版) ==========
+    # ========== 2. 基于子图的控制生成 ==========
 
     def controlled_generation_with_subgraph(self, query: str,
                                             use_consistency: bool = True,
                                             use_reasoning: bool = True) -> Dict[str, Any]:
         """
-        基于子图的控制生成 (改进版)
+        基于子图的控制生成
         Args:
             query: 用户问题
             use_consistency: 是否使用自一致性检索
@@ -349,32 +211,29 @@ class KnowledgeGraphRetrieval:
             生成结果 (包含答案和验证)
         """
         print(f"\n{'=' * 60}")
-        print(f"🎯 基于子图的控制生成 (改进版)")
+        print(f"🎯 基于子图的控制生成")
         print(f"{'=' * 60}\n")
 
         # 1. 检索高一致性子图
         if use_consistency:
             consistency_result = self.self_consistency_retrieval(query, num_samples=3)
-            # ✓ 使用高一致性子图,不是随机的一个
             subgraph = consistency_result['consistent_subgraph']
             consistency_info = f"""
 一致性分析:
 - 高一致性节点: {len(subgraph['nodes'])} 个
 - 高一致性路径: {len(subgraph['paths'])} 个
-- 平均一致性: {sum(n.get('consistency', 0) for n in subgraph['nodes']) / len(subgraph['nodes']):.2%}
+- 平均一致性: {sum(n.get('consistency', 0) for n in subgraph['nodes']) / len(subgraph['nodes']) if subgraph['nodes'] else 0:.2%}
 """
         else:
             subgraph = self.retrieve_relevant_subgraph(query, max_depth=2, top_k=10)
             consistency_info = ""
 
-        # 2. 多跳推理 (关键改进)
+        # 2. 多跳推理 (如果启用)
         reasoning_chains = []
         if use_reasoning:
-            print(" 执行多跳推理...\n")
-            # 提取查询中的关键实体
+            print("🧠 执行多跳推理...\n")
             entities = self._extract_entities_from_query(query)
 
-            # 为每对实体找推理路径
             if len(entities) >= 2:
                 for i in range(len(entities) - 1):
                     reasoning = self.multi_hop_reasoning(
@@ -385,17 +244,17 @@ class KnowledgeGraphRetrieval:
                         reasoning_chains.append({
                             'from': entities[i],
                             'to': entities[i + 1],
-                            'path': reasoning['paths'][0]  # 最佳路径
+                            'path': reasoning['paths'][0]
                         })
 
             print(f"✓ 找到 {len(reasoning_chains)} 条推理链\n")
 
-        # 3. 构建结构化知识 (融合推理链)
+        # 3. 构建结构化知识
         structured_knowledge = self._format_subgraph_with_reasoning(
             subgraph, reasoning_chains
         )
 
-        # 4. 硬约束生成 (关键改进)
+        # 4. 硬约束生成
         print("📝 生成答案 (硬约束模式)...\n")
         answer, constrained_entities = self._generate_with_hard_constraints(
             query, structured_knowledge, consistency_info, subgraph
@@ -416,9 +275,7 @@ class KnowledgeGraphRetrieval:
 
     def _format_subgraph_with_reasoning(self, subgraph: Dict,
                                         reasoning_chains: List[Dict]) -> str:
-        """
-        格式化子图信息,融合推理链
-        """
+        """格式化子图信息,融合推理链"""
         knowledge_parts = []
 
         # 1. 格式化节点信息
@@ -460,7 +317,6 @@ class KnowledgeGraphRetrieval:
         # 2. 格式化关系路径
         knowledge_parts.append("\n【医疗知识关联】")
 
-        # 优先显示高一致性路径
         sorted_paths = sorted(
             subgraph['paths'][:10],
             key=lambda p: p.get('consistency', 0),
@@ -476,7 +332,7 @@ class KnowledgeGraphRetrieval:
             else:
                 knowledge_parts.append(f"  {path['description']}")
 
-        # 3. 融合推理链 (关键改进)
+        # 3. 融合推理链
         if reasoning_chains:
             knowledge_parts.append("\n【推理链】")
             for chain in reasoning_chains:
@@ -493,15 +349,7 @@ class KnowledgeGraphRetrieval:
 
     def _generate_with_hard_constraints(self, query: str, structured_knowledge: str,
                                         consistency_info: str, subgraph: Dict) -> Tuple[str, List[str]]:
-        """
-        硬约束生成 (关键改进)
-
-        策略:
-        1. 提取子图中的所有实体名称作为"允许列表"
-        2. 要求LLM只使用允许列表中的实体
-        3. 生成后验证并过滤违规内容
-        """
-
+        """硬约束生成"""
         # 构建实体允许列表
         allowed_entities = [node['name'] for node in subgraph['nodes']]
         allowed_entities_str = ', '.join(allowed_entities)
@@ -547,21 +395,42 @@ class KnowledgeGraphRetrieval:
 """
 
         # 生成答案
-        response = self._call_deepseek(prompt, max_tokens=800, temperature=0.1)
+        if self.use_llm:
+            try:
+                response = self._call_deepseek(prompt, max_tokens=800, temperature=0.1)
+            except Exception as e:
+                print(f"⚠️  LLM 生成失败: {e}")
+                response = self._generate_fallback_answer(query, subgraph)
+        else:
+            response = self._generate_fallback_answer(query, subgraph)
 
-        # 后处理: 验证和过滤 (额外的硬约束层)
+        # 后处理: 验证和过滤
         constrained_response, used_entities = self._enforce_entity_constraints(
             response, allowed_entities
         )
 
         return constrained_response, used_entities
 
-    def _enforce_entity_constraints(self, text: str, allowed_entities: List[str]) -> Tuple[str, List[str]]:
-        """
-        强制实体约束 (后处理硬约束)
+    def _generate_fallback_answer(self, query: str, subgraph: Dict) -> str:
+        """备用生成方法 (不使用LLM)"""
+        answer_parts = []
 
-        扫描文本,标记不在允许列表中的实体
-        """
+        answer_parts.append("【基于知识图谱的回答】\n")
+
+        if subgraph['nodes']:
+            answer_parts.append("相关实体:")
+            for node in subgraph['nodes'][:5]:
+                answer_parts.append(f"  - {node['name']} ({node['type']})")
+
+        if subgraph['paths']:
+            answer_parts.append("\n相关知识:")
+            for path in subgraph['paths'][:3]:
+                answer_parts.append(f"  - {path['description']}")
+
+        return '\n'.join(answer_parts)
+
+    def _enforce_entity_constraints(self, text: str, allowed_entities: List[str]) -> Tuple[str, List[str]]:
+        """强制实体约束 (后处理硬约束)"""
         used_entities = []
 
         # 找出文本中使用的实体
@@ -569,84 +438,106 @@ class KnowledgeGraphRetrieval:
             if entity in text:
                 used_entities.append(entity)
 
-        # 检测可能的违规实体 (简化版,实际可用NER)
-        # 这里用启发式方法: 检查是否有其他医疗术语
-        suspicious_patterns = [
-            r'(?<![a-zA-Z\u4e00-\u9fa5])[A-Z\u4e00-\u9fa5]{2,8}(?![a-zA-Z\u4e00-\u9fa5])',
-        ]
-
-        # 在实际应用中,可以用更复杂的NER模型检测违规实体
-        # 这里简化处理,主要依赖Prompt约束
-
         return text, used_entities
 
-    def _format_subgraph_for_generation(self, subgraph: Dict) -> str:
-        """将子图格式化为结构化知识"""
-        knowledge_parts = []
+    # ========== 3. 自一致性检索 ==========
 
-        # 格式化节点信息
-        knowledge_parts.append("【相关医疗实体】")
+    def self_consistency_retrieval(self, query: str, num_samples: int = 3) -> Dict[str, Any]:
+        """自一致性检索"""
+        print(f"\n{'=' * 60}")
+        print(f"🔄 自一致性检索 (采样{num_samples}次)")
+        print(f"{'=' * 60}\n")
 
-        # 按类型分组
-        nodes_by_type = {}
-        for node in subgraph['nodes']:
-            node_type = node['type']
-            if node_type not in nodes_by_type:
-                nodes_by_type[node_type] = []
-            nodes_by_type[node_type].append(node)
+        all_subgraphs = []
+        for i in range(num_samples):
+            print(f"第 {i + 1}/{num_samples} 次检索...")
+            subgraph = self.retrieve_relevant_subgraph(query, max_depth=2, top_k=8)
+            all_subgraphs.append(subgraph)
 
-        for node_type, nodes in nodes_by_type.items():
-            knowledge_parts.append(f"\n{node_type}:")
-            for node in nodes[:5]:  # 限制数量
-                props = node.get('properties', {})
-                prop_str = ', '.join([f"{k}:{v}" for k, v in props.items()
-                                      if k not in ['id', 'name']])
-                if prop_str:
-                    knowledge_parts.append(f"  - {node['name']} ({prop_str})")
-                else:
-                    knowledge_parts.append(f"  - {node['name']}")
+        print(f"\n✓ 完成 {num_samples} 次检索\n")
 
-        # 格式化关系和路径
-        knowledge_parts.append("\n【医疗知识关联】")
-        for path in subgraph['paths'][:5]:  # 限制路径数量
-            knowledge_parts.append(f"  {path['description']}")
+        # 统计一致性
+        node_counter = {}
+        node_data = {}
+        path_counter = {}
+        rel_counter = {}
+        rel_data = {}
 
-        return '\n'.join(knowledge_parts)
+        for subgraph in all_subgraphs:
+            for node in subgraph['nodes']:
+                key = (node['type'], node['name'])
+                node_counter[key] = node_counter.get(key, 0) + 1
+                if key not in node_data:
+                    node_data[key] = node
 
-    def _generate_with_constraints(self, query: str, structured_knowledge: str,
-                                   consistency_info: str) -> str:
-        """基于约束生成答案"""
-        print("📝 生成答案...\n")
+            for rel in subgraph['relationships']:
+                key = (rel['from_name'], rel['to_name'], rel['type'])
+                rel_counter[key] = rel_counter.get(key, 0) + 1
+                if key not in rel_data:
+                    rel_data[key] = rel
 
-        prompt = f"""你是一个专业的医疗知识问答助手。基于提供的知识图谱信息回答问题。
+            for path in subgraph['paths']:
+                pattern = ' -> '.join([
+                                          f"{path['nodes'][i]['name']}[{path['relationships'][i]['type']}]"
+                                          for i in range(len(path['relationships']))
+                                      ] + [path['nodes'][-1]['name']])
+                path_counter[pattern] = path_counter.get(pattern, 0) + 1
 
-【重要约束】
-1. 必须基于提供的知识图谱信息回答
-2. 不要编造知识图谱中没有的信息
-3. 如果知识图谱信息不足,明确说明
-4. 按照"疾病识别 -> 治疗措施 -> 用药指导 -> 监测要点"的结构组织答案
-5. 引用具体的实体和关系
+        # 构建高一致性子图
+        threshold = num_samples // 2 + 1
 
-{consistency_info}
+        consistent_nodes = []
+        for (node_type, node_name), count in node_counter.items():
+            if count >= threshold:
+                node = node_data[(node_type, node_name)].copy()
+                node['consistency'] = count / num_samples
+                consistent_nodes.append(node)
 
-【知识图谱信息】
-{structured_knowledge}
+        consistent_relationships = []
+        for (from_name, to_name, rel_type), count in rel_counter.items():
+            if count >= threshold:
+                rel = rel_data[(from_name, to_name, rel_type)].copy()
+                rel['consistency'] = count / num_samples
+                consistent_relationships.append(rel)
 
-【用户问题】
-{query}
+        consistent_paths = []
+        path_data = {}
+        for subgraph in all_subgraphs:
+            for path in subgraph['paths']:
+                pattern = ' -> '.join([
+                                          f"{path['nodes'][i]['name']}[{path['relationships'][i]['type']}]"
+                                          for i in range(len(path['relationships']))
+                                      ] + [path['nodes'][-1]['name']])
+                if pattern not in path_data:
+                    path_data[pattern] = path
 
-【回答要求】
-- 结构清晰,分点作答
-- 引用知识图谱中的具体信息
-- 标注信息来源(如"根据知识图谱...")
-- 如有属性信息(剂量、时机等),务必包含
+        for pattern, count in path_counter.items():
+            if count >= threshold and pattern in path_data:
+                path = path_data[pattern].copy()
+                path['consistency'] = count / num_samples
+                consistent_paths.append(path)
 
-请回答:
-"""
+        print(f"✓ 高一致性子图构建完成:")
+        print(f"  - 一致性节点: {len(consistent_nodes)} 个")
+        print(f"  - 一致性关系: {len(consistent_relationships)} 个")
+        print(f"  - 一致性路径: {len(consistent_paths)} 个\n")
 
-        response = self._call_deepseek(prompt, max_tokens=1000, temperature=0.3)
+        consistent_subgraph = {
+            'nodes': consistent_nodes,
+            'relationships': consistent_relationships,
+            'paths': consistent_paths
+        }
 
-        return response
+        return {
+            'query': query,
+            'num_samples': num_samples,
+            'consistent_subgraph': consistent_subgraph,
+            'all_subgraphs': all_subgraphs,
+            'statistics': {
+                'node_counter': node_counter,
+                'path_counter': path_counter
+            }
+        }
 
     # ========== 4. 多跳推理 ==========
 
@@ -723,7 +614,8 @@ class KnowledgeGraphRetrieval:
 
             # 2. 关系类型重要性
             important_rels = ['需要治疗', '使用药物', '需要检查']
-            rel_score = sum(1 for r in path['relations'] if r in important_rels) / len(path['relations'])
+            rel_score = sum(1 for r in path['relations'] if r in important_rels) / len(path['relations']) if path[
+                'relations'] else 0
 
             # 综合评分
             path['score'] = 0.6 * length_score + 0.4 * rel_score
@@ -785,15 +677,17 @@ class KnowledgeGraphRetrieval:
 
     def _extract_entities_from_text(self, text: str) -> List[str]:
         """从文本中提取实体"""
-        # 简化版本:匹配图谱中的节点名称
         entities = []
-        with self.driver.session() as session:
-            result = session.run("""
-                MATCH (n)
-                WHERE $text CONTAINS n.name
-                RETURN DISTINCT n.name as name
-            """, text=text)
-            entities = [record['name'] for record in result]
+        try:
+            with self.driver.session() as session:
+                result = session.run("""
+                    MATCH (n)
+                    WHERE $text_content CONTAINS n.name
+                    RETURN DISTINCT n.name as name
+                """, text_content=text)
+                entities = [record['name'] for record in result]
+        except Exception as e:
+            print(f"⚠️  提取实体失败: {e}")
 
         return entities
 
@@ -834,6 +728,9 @@ class KnowledgeGraphRetrieval:
     def _call_deepseek(self, prompt: str, max_tokens: int = 1000,
                        temperature: float = 0) -> str:
         """调用DeepSeek API"""
+        if not self.use_llm:
+            raise Exception("DeepSeek API 未配置")
+
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {self.deepseek_api_key}"
@@ -861,147 +758,81 @@ class KnowledgeGraphRetrieval:
 
 def main():
     """主函数"""
+    print("=" * 60)
+    print("知识图谱检索系统")
+    print("=" * 60)
 
-    # 配置
+    # ⚠️ 请修改为你的实际配置
     NEO4J_URI = "bolt://localhost:7687"
     NEO4J_USER = "neo4j"
-    NEO4J_PASSWORD = "your_password"
-    DEEPSEEK_API_KEY = os.getenv('DEEPSEEK_API_KEY') or "your_api_key"
+    NEO4J_PASSWORD = "aqzdwsfneo"  # 修改这里!
+    DEEPSEEK_API_KEY = os.getenv('sk-8cbf10f456ae40aba1be330eaa3c2397')
 
-    # 创建检索系统
-    retrieval = KnowledgeGraphRetrieval(NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD,
-                                        DEEPSEEK_API_KEY)
+    print(f"\n当前配置:")
+    print(f"  Neo4j URI: {NEO4J_URI}")
+    print(f"  Neo4j User: {NEO4J_USER}")
+    print(f"  DeepSeek API: {'已配置' if DEEPSEEK_API_KEY else '未配置'}")
+    print()
 
     try:
-        # ========== 示例1: 基本子图检索 ==========
-        print("\n" + "=" * 60)
-        print("示例1: 基本子图检索")
-        print("=" * 60)
-
-        query1 = "心脏骤停应该如何急救治疗?"
-        subgraph1 = retrieval.retrieve_relevant_subgraph(query1, max_depth=2, top_k=10)
-
-        print("检索到的关键路径:")
-        for i, path in enumerate(subgraph1['paths'][:3], 1):
-            print(f"  {i}. {path['description']}")
-
-        # ========== 示例2: 自一致性检索 ==========
-        print("\n" + "=" * 60)
-        print("示例2: 自一致性检索")
-        print("=" * 60)
-
-        query2 = "急性冠脉综合征需要哪些治疗?"
-        consistency_result = retrieval.self_consistency_retrieval(query2, num_samples=3)
-
-        print("高一致性节点:")
-        for node in consistency_result['consistent_nodes'][:5]:
-            print(f"  - {node['name']} (一致性: {node['consistency']:.0%})")
-
-        print("\n高一致性路径:")
-        for path in consistency_result['consistent_paths'][:3]:
-            print(f"  - {path['pattern']}")
-            print(f"    一致性: {path['consistency']:.0%}")
-
-        # ========== 示例3: 基于子图的控制生成 (改进版) ==========
-        print("\n" + "=" * 60)
-        print("示例3: 基于子图的硬约束生成")
-        print("=" * 60)
-
-        query3 = "心脏骤停的完整急救流程是什么?"
-        result = retrieval.controlled_generation_with_subgraph(
-            query3,
-            use_consistency=True,
-            use_reasoning=True  # 启用多跳推理
+        retrieval = KnowledgeGraphRetrieval(
+            NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD, DEEPSEEK_API_KEY
         )
 
-        print("生成的答案:")
-        print("-" * 60)
-        print(result['answer'])
-        print("-" * 60)
+        try:
+            # ========== 示例1: 基本子图检索 ==========
+            print("\n" + "=" * 60)
+            print("示例1: 基本子图检索")
+            print("=" * 60)
 
-        print(f"\n约束情况:")
-        print(f"  - 使用的实体: {len(result['constrained_entities'])} 个")
-        print(f"  - 实体列表: {', '.join(result['constrained_entities'][:10])}")
+            query1 = "心脏骤停应该如何急救治疗?"
+            subgraph1 = retrieval.retrieve_relevant_subgraph(query1, max_depth=2, top_k=10)
 
-        if result['reasoning_chains']:
-            print(f"\n  - 推理链数量: {len(result['reasoning_chains'])} 条")
-            for i, chain in enumerate(result['reasoning_chains'], 1):
-                print(f"    推理链{i}: {chain['from']} → {chain['to']}")
+            if subgraph1['paths']:
+                print("\n✓ 检索到的关键路径:")
+                for i, path in enumerate(subgraph1['paths'][:5], 1):
+                    print(f"  {i}. {path['description']}")
 
-        # ========== 示例4: 验证生成内容 (改进版) ==========
-        print("\n" + "=" * 60)
-        print("示例4: 验证生成内容与子图的一致性")
-        print("=" * 60)
+            if subgraph1['nodes']:
+                print("\n✓ 检索到的节点:")
+                for i, node in enumerate(subgraph1['nodes'][:10], 1):
+                    print(f"  {i}. {node['name']} ({node['type']})")
 
-        validation = result['validation']
+            # ========== 示例2: 自一致性检索 ==========
+            print("\n" + "=" * 60)
+            print("示例2: 自一致性检索")
+            print("=" * 60)
 
-        print(f"\n✓ 验证结果:")
-        print(f"  - 总体一致性得分: {validation['overall_score']:.2%}")
-        print(f"  - 实体一致性: {validation['entity_consistency']:.2%}")
-        print(f"  - 关系一致性: {validation['claim_consistency']:.2%}")
+            query2 = "急性冠脉综合征需要哪些治疗?"
+            consistency_result = retrieval.self_consistency_retrieval(query2, num_samples=3)
 
-        print(f"\n有效实体 (来自图谱):")
-        for entity in validation['valid_entities'][:8]:
-            print(f"  ✓ {entity}")
+            # 修复:正确访问一致性子图
+            consistent_subgraph = consistency_result['consistent_subgraph']
 
-        if validation['invalid_entities']:
-            print(f"\n⚠️ 无效实体 (不在图谱中):")
-            for entity in validation['invalid_entities']:
-                print(f"  ✗ {entity}")
+            if consistent_subgraph['nodes']:
+                print("\n✓ 高一致性节点:")
+                for node in consistent_subgraph['nodes'][:5]:
+                    print(f"  - {node['name']} (一致性: {node['consistency']:.0%})")
 
-        print(f"\n陈述验证 (前3条):")
-        for i, claim in enumerate(validation['verified_claims'][:3], 1):
-            status = "✓ 已验证" if claim['verified'] else "✗ 未验证"
-            print(f"  {i}. [{status}] {claim['claim'][:60]}...")
-            if claim['verified'] and claim['supporting_path']:
-                print(f"     支持路径: {claim['supporting_path'][:80]}")
+            if consistent_subgraph['paths']:
+                print("\n✓ 高一致性路径:")
+                for path in consistent_subgraph['paths'][:3]:
+                    print(f"  - {path['description']}")
+                    print(f"    一致性: {path['consistency']:.0%}")
 
-        # ========== 示例5: 对比普通生成 vs 硬约束生成 ==========
-        print("\n" + "=" * 60)
-        print("示例5: 对比测试")
-        print("=" * 60)
+        finally:
+            retrieval.close()
+            print("\n" + "=" * 60)
+            print("✓ 数据库连接已关闭")
+            print("=" * 60)
 
-        query5 = "呼吸衰竭如何治疗?"
-
-        # 方式1: 使用硬约束
-        print("\n【方式1: 硬约束生成】")
-        result_constrained = retrieval.controlled_generation_with_subgraph(
-            query5, use_consistency=True, use_reasoning=True
-        )
-        print(f"一致性得分: {result_constrained['validation']['overall_score']:.2%}")
-        print(f"使用实体数: {len(result_constrained['constrained_entities'])}")
-
-        # 方式2: 不使用一致性和推理
-        print("\n【方式2: 普通生成】")
-        result_normal = retrieval.controlled_generation_with_subgraph(
-            query5, use_consistency=False, use_reasoning=False
-        )
-        print(f"一致性得分: {result_normal['validation']['overall_score']:.2%}")
-
-        print("\n对比结果:")
-        score_improvement = (result_constrained['validation']['overall_score'] -
-                             result_normal['validation']['overall_score']) * 100
-        print(f"  硬约束提升: +{score_improvement:.1f}%")
-
-        # ========== 示例5: 多跳推理 ==========
-        print("\n" + "=" * 60)
-        print("示例5: 多跳推理")
-        print("=" * 60)
-
-        query5 = "心脏骤停和肾上腺素之间有什么关系?"
-        reasoning = retrieval.multi_hop_reasoning(query5, max_hops=3)
-
-        if reasoning and reasoning['paths']:
-            print(f"\n找到从 {reasoning['start']} 到 {reasoning['end']} 的推理路径:\n")
-            for i, path in enumerate(reasoning['paths'][:3], 1):
-                print(f"路径{i} (得分: {path['score']:.3f}, {path['hops']}跳):")
-                for j in range(len(path['relations'])):
-                    print(f"  {path['nodes'][j]} --[{path['relations'][j]}]--> {path['nodes'][j + 1]}")
-                print()
-
-    finally:
-        retrieval.close()
-        print("\n数据库连接已关闭")
+    except Exception as e:
+        print(f"\n❌ 错误: {e}")
+        print("\n配置检查清单:")
+        print("1. Neo4j 是否运行? (http://localhost:7474)")
+        print("2. 用户名和密码是否正确?")
+        print("3. 图谱中是否有数据?")
+        print("4. DeepSeek API key 是否有效? (可选)")
 
 
 if __name__ == "__main__":

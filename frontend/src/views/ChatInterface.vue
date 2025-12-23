@@ -21,8 +21,19 @@
             <el-avatar :size="40" :icon="message.type === 'user' ? User : Service" />
           </div>
           <div class="message-text">
-            <div class="message-bubble" :class="message.type">
-              <p v-html="formatMessage(message.content)"></p>
+            <div class="message-bubble" :class="[message.type, { 'medical-bubble': message.contentType === 'medical' }]">
+              
+              <!-- 医学答案展示（美化组件） -->
+              <MedicalAnswerDisplay 
+                v-if="message.contentType === 'medical' && isObjectContent(message.content)"
+                :answer-data="parseMedicalContent(message.content)"
+              />
+              
+              <!-- 普通文本消息 -->
+              <template v-else>
+                <p v-html="formatMessage(getMessageContent(message))"></p>
+              </template>
+              
               <span class="message-time">{{ formatTime(message.timestamp) }}</span>
             </div>
           </div>
@@ -97,9 +108,13 @@
 import { ref, nextTick, onMounted } from 'vue'
 import { chatApi } from '../utils/api'
 import { ElMessage } from 'element-plus'
+import MedicalAnswerDisplay from '../components/MedicalAnswerDisplay.vue'
 
 export default {
   name: 'ChatInterface',
+  components: {
+    MedicalAnswerDisplay
+  },
   setup() {
     const messages = ref([])
     const currentMessage = ref('')
@@ -113,6 +128,41 @@ export default {
       '大出血的紧急处理？',
       '心肺复苏的操作步骤？'
     ]
+
+    // 获取消息内容（兼容对象和字符串）
+    const getMessageContent = (message) => {
+      if (typeof message.content === 'object' && message.content !== null) {
+        // 如果是对象，尝试提取文本内容
+        return message.content.text || message.content.coreAnswer || JSON.stringify(message.content)
+      }
+      return message.content || ''
+    }
+
+    // 判断内容是否为对象（医学答案）
+    const isObjectContent = (content) => {
+      return typeof content === 'object' && content !== null
+    }
+
+    // 解析医学内容
+    const parseMedicalContent = (content) => {
+      if (typeof content === 'object' && content !== null) {
+        return {
+          coreAnswer: content.coreAnswer || content.answer || '',
+          detailedInfo: content.detailedInfo || content.details || '',
+          importantNotes: content.importantNotes || content.warnings || ''
+        }
+      }
+      // 如果是字符串，尝试解析JSON
+      try {
+        return JSON.parse(content)
+      } catch (e) {
+        return {
+          coreAnswer: content,
+          detailedInfo: '',
+          importantNotes: ''
+        }
+      }
+    }
 
     // 发送消息
     const sendMessage = async () => {
@@ -133,11 +183,30 @@ export default {
         // 调用API
         const response = await chatApi.sendMessage(message)
         
+        // 解析响应内容
+        let botContent = response.response
+        let contentType = 'text'
+        
+        // 尝试解析是否为结构化医学答案
+        try {
+          // 尝试解析JSON
+          const parsed = JSON.parse(botContent)
+          
+          // 检查是否包含医学答案的关键字段
+          if (parsed.coreAnswer || parsed.answerData || parsed.answer) {
+            botContent = parsed
+            contentType = 'medical'
+          }
+        } catch (e) {
+          // 不是JSON，保持文本格式
+        }
+        
         // 添加机器人回复
         messages.value.push({
           type: 'bot',
-          content: response.response,
-          timestamp: response.timestamp
+          content: botContent,
+          contentType: contentType,
+          timestamp: response.timestamp || new Date().toISOString()
         })
       } catch (error) {
         console.error('发送消息失败:', error)
@@ -178,6 +247,7 @@ export default {
 
     // 格式化消息
     const formatMessage = (content) => {
+      if (!content) return ''
       return content.replace(/\n/g, '<br>')
     }
 
@@ -204,6 +274,7 @@ export default {
       messages.value.push({
         type: 'bot',
         content: '您好！我是重症伤员处置专业助手。\n\n我可以帮助您：\n• 分析症状和病情\n• 提供处置建议\n• 指导急救流程\n\n请描述您遇到的具体情况，我会尽力提供帮助。',
+        contentType: 'text',
         timestamp: new Date().toISOString()
       })
     }
@@ -222,7 +293,10 @@ export default {
       sendQuickQuestion,
       clearChat,
       formatMessage,
-      formatTime
+      formatTime,
+      getMessageContent,
+      isObjectContent,
+      parseMedicalContent
     }
   }
 }
@@ -303,6 +377,14 @@ export default {
   margin-right: 20px;
 }
 
+/* 医学答案气泡样式 */
+.message-bubble.medical-bubble {
+  background: transparent;
+  border: none;
+  padding: 0;
+  margin-right: 0;
+}
+
 .message-bubble.loading {
   display: flex;
   align-items: center;
@@ -364,5 +446,18 @@ export default {
 
 .quick-buttons .el-button {
   font-size: 12px;
+}
+
+/* 医学组件容器样式 */
+:deep(.medical-bubble .medical-qa-display) {
+  max-width: 100%;
+}
+
+:deep(.medical-bubble .answer-section) {
+  margin-bottom: 16px;
+}
+
+:deep(.medical-bubble .answer-section:last-child) {
+  margin-bottom: 0;
 }
 </style>

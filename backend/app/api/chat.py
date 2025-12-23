@@ -1,5 +1,6 @@
 from flask import Blueprint,request,jsonify
 from backend.app.utils.kg_retrieval import KnowledgeGraphRetrieval
+from backend.app.utils.format_response import format_user_response
 from datetime import datetime
 import os
 
@@ -22,9 +23,8 @@ def chat():
             return jsonify({"error":"消息不能为空"}),400
 
         response=retrieval.controlled_generation_with_subgraph(user_message,use_consistency=True,use_reasoning=True)
-
         return jsonify({
-            "response":response,
+            "response":response['answer'],
             "timestamp":datetime.utcnow().isoformat()
         })
 
