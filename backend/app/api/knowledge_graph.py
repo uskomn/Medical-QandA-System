@@ -1,5 +1,5 @@
 from flask import Blueprint,jsonify,request
-from backend.app.utils.kg import Neo4jKnowledgeGraph
+from backend.app.service.kg import Neo4jKnowledgeGraph
 import os
 
 kg_bp=Blueprint('knowledge_graph',__name__)

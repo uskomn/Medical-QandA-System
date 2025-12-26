@@ -1,6 +1,5 @@
 from flask import Blueprint,request,jsonify
-from backend.app.utils.kg_retrieval import KnowledgeGraphRetrieval
-from backend.app.utils.format_response import format_user_response
+from backend.app.service.kg_retrieval import KnowledgeGraphRetrieval
 from datetime import datetime
 import os
 

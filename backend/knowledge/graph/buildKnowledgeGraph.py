@@ -2,7 +2,7 @@ import json
 import re
 from neo4j import GraphDatabase
 from typing import Dict, List, Any
-from model.utils.readDocx import readDocx
+from backend.knowledge.utils.readDocx import readDocx
 import requests
 import os
 

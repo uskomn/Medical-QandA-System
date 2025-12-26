@@ -2,16 +2,18 @@ from docx import Document
 
 def readDocx(file_path):
     doc=Document(file_path)
-    full_texts=[]
+    full_text=[]
     for paragraph in doc.paragraphs:
         if paragraph.text.strip():
-            full_texts.append(paragraph.text)
+            full_text.append(paragraph.text)
 
     for table in doc.tables:
         for row in table.rows:
             for cell in row.cells:
                 if cell.text.strip():
-                    full_texts.append(cell.text)
+                    full_text.append(cell.text)
 
-    document_text='\n'.join(full_texts)
-    return document_text
+    document='\n'.join(full_text)
+    return document
+
+

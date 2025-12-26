@@ -5,8 +5,6 @@ from neo4j import GraphDatabase
 import requests
 import os
 
-
-
 class KnowledgeGraphRetrieval:
     """知识图谱检索与推理系统"""
 
@@ -42,18 +40,9 @@ class KnowledgeGraphRetrieval:
 
     def retrieve_relevant_subgraph(self, query: str, max_depth: int = 2,
                                    top_k: int = 10) -> Dict[str, Any]:
-        """检索相关子图"""
-        print(f"\n{'=' * 60}")
-        print(f"🔍 开始检索相关子图")
-        print(f"查询: {query}")
-        print(f"{'=' * 60}\n")
 
         entities = self._extract_entities_from_query(query)
-        print(f"✓ 提取到关键实体: {entities}\n")
-
         matched_nodes = self._find_matching_nodes(entities)
-        print(f"✓ 匹配到 {len(matched_nodes)} 个图谱节点\n")
-
         if not matched_nodes:
             print("✗ 未找到匹配节点\n")
             return {"nodes": [], "relationships": [], "paths": []}
@@ -752,88 +741,3 @@ class KnowledgeGraphRetrieval:
 
         response_data = response.json()
         return response_data['choices'][0]['message']['content']
-
-
-# ========== 使用示例 ==========
-
-def main():
-    """主函数"""
-    print("=" * 60)
-    print("知识图谱检索系统")
-    print("=" * 60)
-
-    # ⚠️ 请修改为你的实际配置
-    NEO4J_URI = "bolt://localhost:7687"
-    NEO4J_USER = "neo4j"
-    NEO4J_PASSWORD = "aqzdwsfneo"  # 修改这里!
-    DEEPSEEK_API_KEY = os.getenv('sk-8cbf10f456ae40aba1be330eaa3c2397')
-
-    print(f"\n当前配置:")
-    print(f"  Neo4j URI: {NEO4J_URI}")
-    print(f"  Neo4j User: {NEO4J_USER}")
-    print(f"  DeepSeek API: {'已配置' if DEEPSEEK_API_KEY else '未配置'}")
-    print()
-
-    try:
-        retrieval = KnowledgeGraphRetrieval(
-            NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD, DEEPSEEK_API_KEY
-        )
-
-        try:
-            # ========== 示例1: 基本子图检索 ==========
-            print("\n" + "=" * 60)
-            print("示例1: 基本子图检索")
-            print("=" * 60)
-
-            query1 = "心脏骤停应该如何急救治疗?"
-            subgraph1 = retrieval.retrieve_relevant_subgraph(query1, max_depth=2, top_k=10)
-
-            if subgraph1['paths']:
-                print("\n✓ 检索到的关键路径:")
-                for i, path in enumerate(subgraph1['paths'][:5], 1):
-                    print(f"  {i}. {path['description']}")
-
-            if subgraph1['nodes']:
-                print("\n✓ 检索到的节点:")
-                for i, node in enumerate(subgraph1['nodes'][:10], 1):
-                    print(f"  {i}. {node['name']} ({node['type']})")
-
-            # ========== 示例2: 自一致性检索 ==========
-            print("\n" + "=" * 60)
-            print("示例2: 自一致性检索")
-            print("=" * 60)
-
-            query2 = "急性冠脉综合征需要哪些治疗?"
-            consistency_result = retrieval.self_consistency_retrieval(query2, num_samples=3)
-
-            # 修复:正确访问一致性子图
-            consistent_subgraph = consistency_result['consistent_subgraph']
-
-            if consistent_subgraph['nodes']:
-                print("\n✓ 高一致性节点:")
-                for node in consistent_subgraph['nodes'][:5]:
-                    print(f"  - {node['name']} (一致性: {node['consistency']:.0%})")
-
-            if consistent_subgraph['paths']:
-                print("\n✓ 高一致性路径:")
-                for path in consistent_subgraph['paths'][:3]:
-                    print(f"  - {path['description']}")
-                    print(f"    一致性: {path['consistency']:.0%}")
-
-        finally:
-            retrieval.close()
-            print("\n" + "=" * 60)
-            print("✓ 数据库连接已关闭")
-            print("=" * 60)
-
-    except Exception as e:
-        print(f"\n❌ 错误: {e}")
-        print("\n配置检查清单:")
-        print("1. Neo4j 是否运行? (http://localhost:7474)")
-        print("2. 用户名和密码是否正确?")
-        print("3. 图谱中是否有数据?")
-        print("4. DeepSeek API key 是否有效? (可选)")
-
-
-if __name__ == "__main__":
-    main()
